@@ -23,6 +23,7 @@ const client = new MongoClient(process.env.MONGODB_URI, {
 const db = client.db("rentnestDB");
 const propertiesCollection = db.collection("properties");
 const usersCollection = db.collection("users");
+const favoritesCollection = db.collection("favorites");
 
 async function run() {
   try {
@@ -157,6 +158,90 @@ app.get("/properties/:id", verifyToken, async (req, res) => {
     res.send(property);
   } catch (error) {
     res.status(500).send({ message: "Failed to load property" });
+  }
+});
+
+// ---------- Favorites routes ----------
+
+app.get("/favorites", verifyToken, async (req, res) => {
+  try {
+    const result = await favoritesCollection
+      .find({ userEmail: req.decoded.email })
+      .sort({ createdAt: -1 })
+      .toArray();
+    res.send(result);
+  } catch (error) {
+    res.status(500).send({ message: "Failed to load favorites" });
+  }
+});
+
+app.get("/favorites/check/:propertyId", verifyToken, async (req, res) => {
+  try {
+    const favorite = await favoritesCollection.findOne({
+      userEmail: req.decoded.email,
+      propertyId: req.params.propertyId,
+    });
+    res.send({
+      favorited: !!favorite,
+      favoriteId: favorite ? favorite._id : null,
+    });
+  } catch (error) {
+    res.status(500).send({ message: "Failed to check favorite" });
+  }
+});
+
+app.post("/favorites", verifyToken, async (req, res) => {
+  try {
+    const { propertyId } = req.body;
+    if (!ObjectId.isValid(propertyId)) {
+      return res.status(400).send({ message: "Invalid property" });
+    }
+
+    const existing = await favoritesCollection.findOne({
+      userEmail: req.decoded.email,
+      propertyId,
+    });
+    if (existing) {
+      return res.send({ message: "Already in favorites", inserted: false });
+    }
+
+    const property = await propertiesCollection.findOne({
+      _id: new ObjectId(propertyId),
+    });
+    if (!property) {
+      return res.status(404).send({ message: "Property not found" });
+    }
+
+    const favorite = {
+      userEmail: req.decoded.email,
+      propertyId,
+      title: property.title,
+      location: property.location,
+      type: property.type,
+      rent: property.rent,
+      rentType: property.rentType,
+      image: property.images?.[0] || "",
+      createdAt: new Date(),
+    };
+    const result = await favoritesCollection.insertOne(favorite);
+    res.send({ inserted: true, favoriteId: result.insertedId });
+  } catch (error) {
+    res.status(500).send({ message: "Failed to add favorite" });
+  }
+});
+
+app.delete("/favorites/:id", verifyToken, async (req, res) => {
+  try {
+    if (!ObjectId.isValid(req.params.id)) {
+      return res.status(400).send({ message: "Invalid favorite" });
+    }
+    const result = await favoritesCollection.deleteOne({
+      _id: new ObjectId(req.params.id),
+      userEmail: req.decoded.email,
+    });
+    res.send(result);
+  } catch (error) {
+    res.status(500).send({ message: "Failed to remove favorite" });
   }
 });
 
