@@ -2,7 +2,7 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import jwt from "jsonwebtoken";
-import { MongoClient, ServerApiVersion } from "mongodb";
+import { MongoClient, ObjectId, ServerApiVersion } from "mongodb";
 
 dotenv.config();
 
@@ -128,6 +128,7 @@ app.get("/users/role/:email", verifyToken, async (req, res) => {
 
 // ---------- Property routes ----------
 
+// Keep this above "/properties/:id" so "featured" isn't read as an id
 app.get("/properties/featured", async (req, res) => {
   try {
     const result = await propertiesCollection
@@ -138,6 +139,24 @@ app.get("/properties/featured", async (req, res) => {
     res.send(result);
   } catch (error) {
     res.status(500).send({ message: "Failed to load featured properties" });
+  }
+});
+
+app.get("/properties/:id", verifyToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(404).send({ message: "Property not found" });
+    }
+    const property = await propertiesCollection.findOne({
+      _id: new ObjectId(id),
+    });
+    if (!property) {
+      return res.status(404).send({ message: "Property not found" });
+    }
+    res.send(property);
+  } catch (error) {
+    res.status(500).send({ message: "Failed to load property" });
   }
 });
 
