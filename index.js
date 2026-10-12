@@ -76,9 +76,9 @@ const verifyRole = (...allowedRoles) => {
   };
 };
 
-// Ready to use on routes later:
+const verifyOwner = verifyRole("owner");
+// Ready to use on admin routes later:
 // const verifyAdmin = verifyRole("admin");
-// const verifyOwner = verifyRole("owner");
 
 // Reservation fee in cents (Stripe minimum is 50 cents)
 const feeInCents = (rent) =>
@@ -86,6 +86,8 @@ const feeInCents = (rent) =>
 
 // Makes user text safe to use inside a regex search
 const escapeRegex = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const RENT_TYPES = ["Monthly", "Weekly", "Daily"];
 
 // ---------- Auth routes ----------
 
@@ -228,6 +230,111 @@ app.get("/properties/:id", verifyToken, async (req, res) => {
     res.send(property);
   } catch (error) {
     res.status(500).send({ message: "Failed to load property" });
+  }
+});
+
+// An owner adds a property. It starts as "pending" until an admin approves it
+app.post("/properties", verifyToken, verifyOwner, async (req, res) => {
+  try {
+    const {
+      title,
+      description,
+      location,
+      type,
+      rent,
+      rentType,
+      bedrooms,
+      bathrooms,
+      size,
+      amenities,
+      images,
+      extraFeatures,
+    } = req.body;
+
+    const cleanTitle = typeof title === "string" ? title.trim() : "";
+    const cleanDescription =
+      typeof description === "string" ? description.trim() : "";
+    const cleanLocation = typeof location === "string" ? location.trim() : "";
+    const cleanType = typeof type === "string" ? type.trim() : "";
+
+    if (!cleanTitle || !cleanDescription || !cleanLocation || !cleanType) {
+      return res.status(400).send({
+        message: "Title, description, location and type are required",
+      });
+    }
+
+    if (!RENT_TYPES.includes(rentType)) {
+      return res.status(400).send({ message: "Invalid rent type" });
+    }
+
+    const rentNumber = Number(rent);
+    const bedroomsNumber = Number(bedrooms);
+    const bathroomsNumber = Number(bathrooms);
+    const sizeNumber = Number(size);
+    if (!(rentNumber > 0)) {
+      return res.status(400).send({ message: "Rent must be more than 0" });
+    }
+    if (
+      !Number.isInteger(bedroomsNumber) ||
+      bedroomsNumber < 0 ||
+      !Number.isInteger(bathroomsNumber) ||
+      bathroomsNumber < 0
+    ) {
+      return res
+        .status(400)
+        .send({ message: "Bedrooms and bathrooms must be whole numbers" });
+    }
+    if (!(sizeNumber > 0)) {
+      return res.status(400).send({ message: "Size must be more than 0" });
+    }
+
+    const cleanImages = Array.isArray(images)
+      ? images
+          .map((url) => (typeof url === "string" ? url.trim() : ""))
+          .filter((url) => /^https?:\/\//i.test(url))
+          .slice(0, 6)
+      : [];
+    if (cleanImages.length === 0) {
+      return res
+        .status(400)
+        .send({ message: "Add at least one valid image link" });
+    }
+
+    const cleanAmenities = Array.isArray(amenities)
+      ? amenities
+          .map((item) => (typeof item === "string" ? item.trim() : ""))
+          .filter(Boolean)
+          .slice(0, 20)
+      : [];
+
+    // Owner details come from the saved account, so they can't be faked
+    const owner = await usersCollection.findOne({ email: req.decoded.email });
+
+    const property = {
+      title: cleanTitle,
+      description: cleanDescription,
+      location: cleanLocation,
+      type: cleanType,
+      rent: rentNumber,
+      rentType,
+      bedrooms: bedroomsNumber,
+      bathrooms: bathroomsNumber,
+      size: sizeNumber,
+      amenities: cleanAmenities,
+      images: cleanImages,
+      extraFeatures:
+        typeof extraFeatures === "string" ? extraFeatures.trim() : "",
+      status: "pending",
+      ownerName: owner?.name || "",
+      ownerEmail: req.decoded.email,
+      ownerPhoto: owner?.photo || "",
+      createdAt: new Date(),
+    };
+
+    const result = await propertiesCollection.insertOne(property);
+    res.send({ inserted: true, propertyId: result.insertedId });
+  } catch (error) {
+    res.status(500).send({ message: "Failed to add property" });
   }
 });
 
