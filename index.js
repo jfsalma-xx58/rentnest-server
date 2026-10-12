@@ -31,6 +31,7 @@ const usersCollection = db.collection("users");
 const favoritesCollection = db.collection("favorites");
 const bookingsCollection = db.collection("bookings");
 const paymentsCollection = db.collection("payments");
+const reviewsCollection = db.collection("reviews");
 
 async function run() {
   try {
@@ -227,6 +228,81 @@ app.get("/properties/:id", verifyToken, async (req, res) => {
     res.send(property);
   } catch (error) {
     res.status(500).send({ message: "Failed to load property" });
+  }
+});
+
+// ---------- Review routes ----------
+
+// Reviews for one property, newest first
+app.get("/reviews/:propertyId", verifyToken, async (req, res) => {
+  try {
+    const result = await reviewsCollection
+      .find({ propertyId: req.params.propertyId })
+      .sort({ createdAt: -1 })
+      .toArray();
+    res.send(result);
+  } catch (error) {
+    res.status(500).send({ message: "Failed to load reviews" });
+  }
+});
+
+// Only tenants can post, one review per tenant per property
+app.post("/reviews", verifyToken, verifyRole("tenant"), async (req, res) => {
+  try {
+    const { propertyId, rating, comment } = req.body;
+
+    if (!ObjectId.isValid(propertyId)) {
+      return res.status(400).send({ message: "Invalid property" });
+    }
+
+    const ratingNumber = Number(rating);
+    if (!Number.isInteger(ratingNumber) || ratingNumber < 1 || ratingNumber > 5) {
+      return res.status(400).send({ message: "Rating must be from 1 to 5" });
+    }
+
+    const text = typeof comment === "string" ? comment.trim() : "";
+    if (!text) {
+      return res.status(400).send({ message: "Please write a comment" });
+    }
+    if (text.length > 500) {
+      return res
+        .status(400)
+        .send({ message: "Comment must be 500 characters or less" });
+    }
+
+    const property = await propertiesCollection.findOne({
+      _id: new ObjectId(propertyId),
+    });
+    if (!property) {
+      return res.status(404).send({ message: "Property not found" });
+    }
+
+    const existing = await reviewsCollection.findOne({
+      propertyId,
+      reviewerEmail: req.decoded.email,
+    });
+    if (existing) {
+      return res
+        .status(409)
+        .send({ message: "You have already reviewed this property" });
+    }
+
+    // Name and photo come from the saved account, so they can't be faked
+    const reviewer = await usersCollection.findOne({ email: req.decoded.email });
+
+    const review = {
+      propertyId,
+      reviewerName: reviewer?.name || "Tenant",
+      reviewerEmail: req.decoded.email,
+      reviewerPhoto: reviewer?.photo || "",
+      rating: ratingNumber,
+      comment: text,
+      createdAt: new Date(),
+    };
+    const result = await reviewsCollection.insertOne(review);
+    res.send({ inserted: true, review: { ...review, _id: result.insertedId } });
+  } catch (error) {
+    res.status(500).send({ message: "Failed to save review" });
   }
 });
 
