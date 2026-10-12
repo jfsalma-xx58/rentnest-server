@@ -436,6 +436,19 @@ app.post("/payments", verifyToken, async (req, res) => {
   }
 });
 
+// The logged-in tenant's own bookings, newest first
+app.get("/bookings/my", verifyToken, async (req, res) => {
+  try {
+    const result = await bookingsCollection
+      .find({ tenantEmail: req.decoded.email })
+      .sort({ createdAt: -1 })
+      .toArray();
+    res.send(result);
+  } catch (error) {
+    res.status(500).send({ message: "Failed to load bookings" });
+  }
+});
+
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
 });
