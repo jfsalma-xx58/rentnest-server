@@ -89,6 +89,93 @@ const escapeRegex = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 const RENT_TYPES = ["Monthly", "Weekly", "Daily"];
 
+// Checks and cleans the property fields sent by the owner form.
+// Returns { error } or { data }.
+const validatePropertyInput = (body) => {
+  const {
+    title,
+    description,
+    location,
+    type,
+    rent,
+    rentType,
+    bedrooms,
+    bathrooms,
+    size,
+    amenities,
+    images,
+    extraFeatures,
+  } = body;
+
+  const cleanTitle = typeof title === "string" ? title.trim() : "";
+  const cleanDescription =
+    typeof description === "string" ? description.trim() : "";
+  const cleanLocation = typeof location === "string" ? location.trim() : "";
+  const cleanType = typeof type === "string" ? type.trim() : "";
+
+  if (!cleanTitle || !cleanDescription || !cleanLocation || !cleanType) {
+    return { error: "Title, description, location and type are required" };
+  }
+
+  if (!RENT_TYPES.includes(rentType)) {
+    return { error: "Invalid rent type" };
+  }
+
+  const rentNumber = Number(rent);
+  const bedroomsNumber = Number(bedrooms);
+  const bathroomsNumber = Number(bathrooms);
+  const sizeNumber = Number(size);
+  if (!(rentNumber > 0)) {
+    return { error: "Rent must be more than 0" };
+  }
+  if (
+    !Number.isInteger(bedroomsNumber) ||
+    bedroomsNumber < 0 ||
+    !Number.isInteger(bathroomsNumber) ||
+    bathroomsNumber < 0
+  ) {
+    return { error: "Bedrooms and bathrooms must be whole numbers" };
+  }
+  if (!(sizeNumber > 0)) {
+    return { error: "Size must be more than 0" };
+  }
+
+  const cleanImages = Array.isArray(images)
+    ? images
+        .map((url) => (typeof url === "string" ? url.trim() : ""))
+        .filter((url) => /^https?:\/\//i.test(url))
+        .slice(0, 6)
+    : [];
+  if (cleanImages.length === 0) {
+    return { error: "Add at least one valid image link" };
+  }
+
+  const cleanAmenities = Array.isArray(amenities)
+    ? amenities
+        .map((item) => (typeof item === "string" ? item.trim() : ""))
+        .filter(Boolean)
+        .slice(0, 20)
+    : [];
+
+  return {
+    data: {
+      title: cleanTitle,
+      description: cleanDescription,
+      location: cleanLocation,
+      type: cleanType,
+      rent: rentNumber,
+      rentType,
+      bedrooms: bedroomsNumber,
+      bathrooms: bathroomsNumber,
+      size: sizeNumber,
+      amenities: cleanAmenities,
+      images: cleanImages,
+      extraFeatures:
+        typeof extraFeatures === "string" ? extraFeatures.trim() : "",
+    },
+  };
+};
+
 // ---------- Auth routes ----------
 
 app.get("/", (req, res) => {
@@ -215,6 +302,40 @@ app.get("/properties/featured", async (req, res) => {
   }
 });
 
+// The logged-in owner's own properties (any status).
+// Keep this above "/properties/:id" so "mine" isn't read as an id
+app.get("/properties/mine", verifyToken, verifyOwner, async (req, res) => {
+  try {
+    const result = await propertiesCollection
+      .find({ ownerEmail: req.decoded.email })
+      .sort({ createdAt: -1 })
+      .toArray();
+    res.send(result);
+  } catch (error) {
+    res.status(500).send({ message: "Failed to load your properties" });
+  }
+});
+
+// One of the owner's own properties, for the update form
+app.get("/properties/mine/:id", verifyToken, verifyOwner, async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(404).send({ message: "Property not found" });
+    }
+    const property = await propertiesCollection.findOne({
+      _id: new ObjectId(id),
+      ownerEmail: req.decoded.email,
+    });
+    if (!property) {
+      return res.status(404).send({ message: "Property not found" });
+    }
+    res.send(property);
+  } catch (error) {
+    res.status(500).send({ message: "Failed to load property" });
+  }
+});
+
 app.get("/properties/:id", verifyToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -236,94 +357,16 @@ app.get("/properties/:id", verifyToken, async (req, res) => {
 // An owner adds a property. It starts as "pending" until an admin approves it
 app.post("/properties", verifyToken, verifyOwner, async (req, res) => {
   try {
-    const {
-      title,
-      description,
-      location,
-      type,
-      rent,
-      rentType,
-      bedrooms,
-      bathrooms,
-      size,
-      amenities,
-      images,
-      extraFeatures,
-    } = req.body;
-
-    const cleanTitle = typeof title === "string" ? title.trim() : "";
-    const cleanDescription =
-      typeof description === "string" ? description.trim() : "";
-    const cleanLocation = typeof location === "string" ? location.trim() : "";
-    const cleanType = typeof type === "string" ? type.trim() : "";
-
-    if (!cleanTitle || !cleanDescription || !cleanLocation || !cleanType) {
-      return res.status(400).send({
-        message: "Title, description, location and type are required",
-      });
+    const { error, data } = validatePropertyInput(req.body);
+    if (error) {
+      return res.status(400).send({ message: error });
     }
-
-    if (!RENT_TYPES.includes(rentType)) {
-      return res.status(400).send({ message: "Invalid rent type" });
-    }
-
-    const rentNumber = Number(rent);
-    const bedroomsNumber = Number(bedrooms);
-    const bathroomsNumber = Number(bathrooms);
-    const sizeNumber = Number(size);
-    if (!(rentNumber > 0)) {
-      return res.status(400).send({ message: "Rent must be more than 0" });
-    }
-    if (
-      !Number.isInteger(bedroomsNumber) ||
-      bedroomsNumber < 0 ||
-      !Number.isInteger(bathroomsNumber) ||
-      bathroomsNumber < 0
-    ) {
-      return res
-        .status(400)
-        .send({ message: "Bedrooms and bathrooms must be whole numbers" });
-    }
-    if (!(sizeNumber > 0)) {
-      return res.status(400).send({ message: "Size must be more than 0" });
-    }
-
-    const cleanImages = Array.isArray(images)
-      ? images
-          .map((url) => (typeof url === "string" ? url.trim() : ""))
-          .filter((url) => /^https?:\/\//i.test(url))
-          .slice(0, 6)
-      : [];
-    if (cleanImages.length === 0) {
-      return res
-        .status(400)
-        .send({ message: "Add at least one valid image link" });
-    }
-
-    const cleanAmenities = Array.isArray(amenities)
-      ? amenities
-          .map((item) => (typeof item === "string" ? item.trim() : ""))
-          .filter(Boolean)
-          .slice(0, 20)
-      : [];
 
     // Owner details come from the saved account, so they can't be faked
     const owner = await usersCollection.findOne({ email: req.decoded.email });
 
     const property = {
-      title: cleanTitle,
-      description: cleanDescription,
-      location: cleanLocation,
-      type: cleanType,
-      rent: rentNumber,
-      rentType,
-      bedrooms: bedroomsNumber,
-      bathrooms: bathroomsNumber,
-      size: sizeNumber,
-      amenities: cleanAmenities,
-      images: cleanImages,
-      extraFeatures:
-        typeof extraFeatures === "string" ? extraFeatures.trim() : "",
+      ...data,
       status: "pending",
       ownerName: owner?.name || "",
       ownerEmail: req.decoded.email,
@@ -335,6 +378,64 @@ app.post("/properties", verifyToken, verifyOwner, async (req, res) => {
     res.send({ inserted: true, propertyId: result.insertedId });
   } catch (error) {
     res.status(500).send({ message: "Failed to add property" });
+  }
+});
+
+// An owner updates their own property.
+// A rejected property goes back to "pending" so an admin can review it again
+app.put("/properties/:id", verifyToken, verifyOwner, async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(404).send({ message: "Property not found" });
+    }
+
+    const filter = { _id: new ObjectId(id), ownerEmail: req.decoded.email };
+    const existing = await propertiesCollection.findOne(filter);
+    if (!existing) {
+      return res.status(404).send({ message: "Property not found" });
+    }
+
+    const { error, data } = validatePropertyInput(req.body);
+    if (error) {
+      return res.status(400).send({ message: error });
+    }
+
+    const update = {
+      $set: { ...data, updatedAt: new Date() },
+    };
+    if (existing.status === "rejected") {
+      update.$set.status = "pending";
+      update.$unset = { rejectionFeedback: "" };
+    }
+
+    await propertiesCollection.updateOne(filter, update);
+    res.send({
+      updated: true,
+      status: existing.status === "rejected" ? "pending" : existing.status,
+    });
+  } catch (error) {
+    res.status(500).send({ message: "Failed to update property" });
+  }
+});
+
+// An owner deletes their own property
+app.delete("/properties/:id", verifyToken, verifyOwner, async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(404).send({ message: "Property not found" });
+    }
+    const result = await propertiesCollection.deleteOne({
+      _id: new ObjectId(id),
+      ownerEmail: req.decoded.email,
+    });
+    if (result.deletedCount === 0) {
+      return res.status(404).send({ message: "Property not found" });
+    }
+    res.send({ deleted: true });
+  } catch (error) {
+    res.status(500).send({ message: "Failed to delete property" });
   }
 });
 
