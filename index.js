@@ -456,6 +456,33 @@ app.delete("/properties/:id", verifyToken, verifyOwner, async (req, res) => {
 
 // ---------- Review routes ----------
 
+// Up to 4 good reviews (4 stars or more) for the home page. Public route,
+// so the reviewer's email is left out.
+// Keep this above "/reviews/:propertyId" so "featured" isn't read as an id
+app.get("/reviews/featured", async (req, res) => {
+  try {
+    const result = await reviewsCollection
+      .find(
+        { rating: { $gte: 4 } },
+        {
+          projection: {
+            reviewerName: 1,
+            reviewerPhoto: 1,
+            rating: 1,
+            comment: 1,
+            createdAt: 1,
+          },
+        }
+      )
+      .sort({ rating: -1, createdAt: -1 })
+      .limit(4)
+      .toArray();
+    res.send(result);
+  } catch (error) {
+    res.status(500).send({ message: "Failed to load reviews" });
+  }
+});
+
 // Reviews for one property, newest first
 app.get("/reviews/:propertyId", verifyToken, async (req, res) => {
   try {
