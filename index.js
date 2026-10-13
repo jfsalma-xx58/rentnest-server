@@ -77,8 +77,7 @@ const verifyRole = (...allowedRoles) => {
 };
 
 const verifyOwner = verifyRole("owner");
-// Ready to use on admin routes later:
-// const verifyAdmin = verifyRole("admin");
+const verifyAdmin = verifyRole("admin");
 
 // Reservation fee in cents (Stripe minimum is 50 cents)
 const feeInCents = (rent) =>
@@ -88,6 +87,7 @@ const feeInCents = (rent) =>
 const escapeRegex = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 const RENT_TYPES = ["Monthly", "Weekly", "Daily"];
+const ROLES = ["tenant", "owner", "admin"];
 
 const MONTH_NAMES = [
   "Jan",
@@ -868,6 +868,225 @@ app.get("/owner/stats", verifyToken, verifyOwner, async (req, res) => {
     });
   } catch (error) {
     res.status(500).send({ message: "Failed to load statistics" });
+  }
+});
+
+// ---------- Admin routes ----------
+
+// All users, newest first
+app.get("/admin/users", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const result = await usersCollection
+      .find({})
+      .sort({ createdAt: -1 })
+      .toArray();
+    res.send(result);
+  } catch (error) {
+    res.status(500).send({ message: "Failed to load users" });
+  }
+});
+
+// Change a user's role. An admin can't change their own role,
+// so the site can never be left without an admin by accident
+app.patch("/admin/users/:id/role", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { role } = req.body;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(404).send({ message: "User not found" });
+    }
+    if (!ROLES.includes(role)) {
+      return res.status(400).send({ message: "Invalid role" });
+    }
+
+    const target = await usersCollection.findOne({ _id: new ObjectId(id) });
+    if (!target) {
+      return res.status(404).send({ message: "User not found" });
+    }
+    if (target.email === req.decoded.email) {
+      return res
+        .status(400)
+        .send({ message: "You can't change your own role" });
+    }
+
+    await usersCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { role } }
+    );
+    res.send({ updated: true, role });
+  } catch (error) {
+    res.status(500).send({ message: "Failed to change role" });
+  }
+});
+
+// All properties, any status, newest first
+app.get("/admin/properties", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const result = await propertiesCollection
+      .find({})
+      .sort({ createdAt: -1 })
+      .toArray();
+    res.send(result);
+  } catch (error) {
+    res.status(500).send({ message: "Failed to load properties" });
+  }
+});
+
+// One property for the admin update form
+app.get("/admin/properties/:id", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(404).send({ message: "Property not found" });
+    }
+    const property = await propertiesCollection.findOne({
+      _id: new ObjectId(id),
+    });
+    if (!property) {
+      return res.status(404).send({ message: "Property not found" });
+    }
+    res.send(property);
+  } catch (error) {
+    res.status(500).send({ message: "Failed to load property" });
+  }
+});
+
+// Approve a property, or reject it with feedback for the owner
+app.patch(
+  "/admin/properties/:id/status",
+  verifyToken,
+  verifyAdmin,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { status, feedback } = req.body;
+
+      if (!ObjectId.isValid(id)) {
+        return res.status(404).send({ message: "Property not found" });
+      }
+      if (status !== "approved" && status !== "rejected") {
+        return res.status(400).send({ message: "Invalid status" });
+      }
+
+      const update = { $set: { status, reviewedAt: new Date() } };
+
+      if (status === "rejected") {
+        const text = typeof feedback === "string" ? feedback.trim() : "";
+        if (!text) {
+          return res
+            .status(400)
+            .send({ message: "Please write the rejection feedback" });
+        }
+        if (text.length > 500) {
+          return res
+            .status(400)
+            .send({ message: "Feedback must be 500 characters or less" });
+        }
+        update.$set.rejectionFeedback = text;
+      } else {
+        update.$unset = { rejectionFeedback: "" };
+      }
+
+      const result = await propertiesCollection.updateOne(
+        { _id: new ObjectId(id) },
+        update
+      );
+      if (result.matchedCount === 0) {
+        return res.status(404).send({ message: "Property not found" });
+      }
+      res.send({ updated: true, status });
+    } catch (error) {
+      res.status(500).send({ message: "Failed to update status" });
+    }
+  }
+);
+
+// The admin updates any property (status and owner stay as they are)
+app.put("/admin/properties/:id", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(404).send({ message: "Property not found" });
+    }
+
+    const { error, data } = validatePropertyInput(req.body);
+    if (error) {
+      return res.status(400).send({ message: error });
+    }
+
+    const result = await propertiesCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { ...data, updatedAt: new Date() } }
+    );
+    if (result.matchedCount === 0) {
+      return res.status(404).send({ message: "Property not found" });
+    }
+    res.send({ updated: true });
+  } catch (error) {
+    res.status(500).send({ message: "Failed to update property" });
+  }
+});
+
+// The admin deletes any property
+app.delete(
+  "/admin/properties/:id",
+  verifyToken,
+  verifyAdmin,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      if (!ObjectId.isValid(id)) {
+        return res.status(404).send({ message: "Property not found" });
+      }
+      const result = await propertiesCollection.deleteOne({
+        _id: new ObjectId(id),
+      });
+      if (result.deletedCount === 0) {
+        return res.status(404).send({ message: "Property not found" });
+      }
+      res.send({ deleted: true });
+    } catch (error) {
+      res.status(500).send({ message: "Failed to delete property" });
+    }
+  }
+);
+
+// All bookings, newest first
+app.get("/admin/bookings", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const result = await bookingsCollection
+      .find({})
+      .sort({ createdAt: -1 })
+      .toArray();
+    res.send(result);
+  } catch (error) {
+    res.status(500).send({ message: "Failed to load bookings" });
+  }
+});
+
+// All transactions with pagination, newest first
+app.get("/admin/transactions", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const pageNumber = Math.max(1, parseInt(req.query.page) || 1);
+    const pageSize = Math.min(50, Math.max(1, parseInt(req.query.limit) || 10));
+
+    const total = await paymentsCollection.countDocuments({});
+    const transactions = await paymentsCollection
+      .find({})
+      .sort({ date: -1 })
+      .skip((pageNumber - 1) * pageSize)
+      .limit(pageSize)
+      .toArray();
+
+    res.send({
+      transactions,
+      total,
+      page: pageNumber,
+      totalPages: Math.max(1, Math.ceil(total / pageSize)),
+    });
+  } catch (error) {
+    res.status(500).send({ message: "Failed to load transactions" });
   }
 });
 
