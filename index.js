@@ -733,6 +733,58 @@ app.get("/bookings/my", verifyToken, async (req, res) => {
   }
 });
 
+// Booking requests for the logged-in owner's properties, newest first
+app.get("/bookings/requests", verifyToken, verifyOwner, async (req, res) => {
+  try {
+    const result = await bookingsCollection
+      .find({ ownerEmail: req.decoded.email })
+      .sort({ createdAt: -1 })
+      .toArray();
+    res.send(result);
+  } catch (error) {
+    res.status(500).send({ message: "Failed to load booking requests" });
+  }
+});
+
+// The owner approves or rejects a pending booking on one of their properties
+app.patch(
+  "/bookings/:id/status",
+  verifyToken,
+  verifyOwner,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { status } = req.body;
+
+      if (!ObjectId.isValid(id)) {
+        return res.status(404).send({ message: "Booking not found" });
+      }
+      if (status !== "approved" && status !== "rejected") {
+        return res.status(400).send({ message: "Invalid status" });
+      }
+
+      // Only a pending booking that belongs to this owner can be changed
+      const result = await bookingsCollection.updateOne(
+        {
+          _id: new ObjectId(id),
+          ownerEmail: req.decoded.email,
+          bookingStatus: "pending",
+        },
+        { $set: { bookingStatus: status, decidedAt: new Date() } }
+      );
+
+      if (result.matchedCount === 0) {
+        return res
+          .status(404)
+          .send({ message: "Booking not found or already decided" });
+      }
+      res.send({ updated: true, status });
+    } catch (error) {
+      res.status(500).send({ message: "Failed to update booking" });
+    }
+  }
+);
+
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
 });
