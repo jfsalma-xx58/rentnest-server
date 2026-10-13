@@ -456,7 +456,7 @@ app.delete("/properties/:id", verifyToken, verifyOwner, async (req, res) => {
 
 // ---------- Review routes ----------
 
-// Up to 4 good reviews (4 stars or more) for the home page. Public route,
+// Up to 4 good reviews (4 stars or more). Public route,
 // so the reviewer's email is left out.
 // Keep this above "/reviews/:propertyId" so "featured" isn't read as an id
 app.get("/reviews/featured", async (req, res) => {
@@ -1117,6 +1117,12 @@ app.get("/admin/transactions", verifyToken, verifyAdmin, async (req, res) => {
   }
 });
 
-app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
-});
+// On Vercel the platform runs the app, so only listen when running locally
+if (!process.env.VERCEL) {
+  app.listen(port, () => {
+    console.log(`Server running on port ${port}`);
+  });
+}
+
+// Vercel needs the Express app to be exported
+export default app;
