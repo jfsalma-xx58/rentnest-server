@@ -89,6 +89,21 @@ const escapeRegex = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 const RENT_TYPES = ["Monthly", "Weekly", "Daily"];
 
+const MONTH_NAMES = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+];
+
 // Checks and cleans the property fields sent by the owner form.
 // Returns { error } or { data }.
 const validatePropertyInput = (body) => {
@@ -784,6 +799,77 @@ app.patch(
     }
   }
 );
+
+// ---------- Owner analytics ----------
+
+// Summary cards and the last 12 months of earnings for the logged-in owner
+app.get("/owner/stats", verifyToken, verifyOwner, async (req, res) => {
+  try {
+    const ownerEmail = req.decoded.email;
+
+    // The 12 months ending with the current month (UTC), oldest first
+    const now = new Date();
+    const months = [];
+    for (let i = 11; i >= 0; i--) {
+      const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
+      months.push({
+        year: d.getUTCFullYear(),
+        month: d.getUTCMonth() + 1,
+        label: `${MONTH_NAMES[d.getUTCMonth()]} ${d.getUTCFullYear()}`,
+        earnings: 0,
+      });
+    }
+    const startDate = new Date(Date.UTC(months[0].year, months[0].month - 1, 1));
+
+    const [totalProperties, totalBookings, totals, monthly] = await Promise.all([
+      propertiesCollection.countDocuments({ ownerEmail }),
+      bookingsCollection.countDocuments({
+        ownerEmail,
+        bookingStatus: "approved",
+      }),
+      paymentsCollection
+        .aggregate([
+          { $match: { ownerEmail } },
+          { $group: { _id: null, total: { $sum: "$amount" } } },
+        ])
+        .toArray(),
+      paymentsCollection
+        .aggregate([
+          { $match: { ownerEmail, date: { $gte: startDate } } },
+          {
+            $group: {
+              _id: {
+                year: { $year: "$date" },
+                month: { $month: "$date" },
+              },
+              total: { $sum: "$amount" },
+            },
+          },
+        ])
+        .toArray(),
+    ]);
+
+    // Fill each month with its total (months with no payments stay at 0)
+    monthly.forEach((row) => {
+      const slot = months.find(
+        (m) => m.year === row._id.year && m.month === row._id.month
+      );
+      if (slot) slot.earnings = Math.round(row.total * 100) / 100;
+    });
+
+    res.send({
+      totalEarnings: Math.round((totals[0]?.total || 0) * 100) / 100,
+      totalProperties,
+      totalBookings,
+      monthlyEarnings: months.map(({ label, earnings }) => ({
+        month: label,
+        earnings,
+      })),
+    });
+  } catch (error) {
+    res.status(500).send({ message: "Failed to load statistics" });
+  }
+});
 
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
