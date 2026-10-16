@@ -784,7 +784,6 @@ app.get("/reviews/featured", async (req, res) => {
         }
       )
       .sort({ rating: -1, createdAt: -1 })
-      .limit(4)
       .toArray();
 
     res.send(result);
