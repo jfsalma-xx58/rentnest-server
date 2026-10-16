@@ -64,7 +64,19 @@ if (paymentConfigError) {
   console.error("PAYMENT CONFIG PROBLEM (payments disabled):", paymentConfigError);
 }
 
-app.use(cors({ origin: process.env.CLIENT_URL, credentials: true }));
+// CLIENT_URL may hold several addresses separated by commas, for example
+// "https://rentnest-ypx1fy.vercel.app,http://localhost:5173".
+const allowedOrigins = (process.env.CLIENT_URL || "")
+  .split(",")
+  .map((url) => url.trim().replace(/\/$/, ""))
+  .filter(Boolean);
+
+app.use(
+  cors({
+    origin: allowedOrigins.length > 0 ? allowedOrigins : false,
+    credentials: true,
+  })
+);
 app.use(express.json());
 
 const client = new MongoClient(process.env.MONGODB_URI, {
@@ -209,6 +221,25 @@ const feeInBdt = (rentUsd) =>
 // Convert the BDT fee to USD cents for Stripe (Stripe minimum is 50 cents).
 const chargeInMinorUnits = (feeBdt) =>
   Math.max(50, Math.round((feeBdt / BDT_PER_USD) * 100));
+
+// A move-in date must be a real YYYY-MM-DD date that is not in the past.
+// The server may run in another time zone than the customer (Vercel uses
+// UTC), so yesterday is accepted to avoid rejecting "today" for the customer.
+const isValidMoveInDate = (value) => {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return false;
+  }
+
+  const moveIn = new Date(`${value}T00:00:00Z`);
+
+  if (isNaN(moveIn)) return false;
+
+  const earliest = new Date();
+  earliest.setUTCHours(0, 0, 0, 0);
+  earliest.setUTCDate(earliest.getUTCDate() - 1);
+
+  return moveIn >= earliest;
+};
 
 // Makes user text safe to use inside a regex search.
 const escapeRegex = (text) =>
@@ -483,12 +514,16 @@ app.get("/properties", async (req, res) => {
 
     const rentRange = {};
 
+    // Visitors enter prices in BDT, but rents are stored in USD.
+    const filterRate = BDT_PER_USD > 0 ? BDT_PER_USD : 123.75;
+    const bdtToUsd = (bdt) => Math.round((Number(bdt) / filterRate) * 10000) / 10000;
+
     if (minPrice !== undefined && minPrice !== "" && !isNaN(minPrice)) {
-      rentRange.$gte = Number(minPrice);
+      rentRange.$gte = bdtToUsd(minPrice);
     }
 
     if (maxPrice !== undefined && maxPrice !== "" && !isNaN(maxPrice)) {
-      rentRange.$lte = Number(maxPrice);
+      rentRange.$lte = bdtToUsd(maxPrice);
     }
 
     if (Object.keys(rentRange).length > 0) {
@@ -534,7 +569,9 @@ app.get("/properties/featured", async (req, res) => {
   try {
     const result = await propertiesCollection
       .find({ status: "approved" }, { projection: { ownerEmail: 0 } })
-      .sort({ createdAt: -1 })
+      // A property marked featured: true always comes first (the homepage
+      // highlights the first one), then the newest.
+      .sort({ featured: -1, createdAt: -1 })
       .limit(6)
       .toArray();
 
@@ -967,10 +1004,15 @@ app.post("/create-payment-intent", verifyToken, async (req, res) => {
     return res.status(500).send({ message: "Payments are not configured yet" });
   }
   try {
-    const { propertyId } = req.body;
+    const { propertyId, moveInDate } = req.body;
 
     if (!ObjectId.isValid(propertyId)) {
       return res.status(400).send({ message: "Invalid property" });
+    }
+
+    // Refuse before any money moves, not after.
+    if (!isValidMoveInDate(moveInDate)) {
+      return res.status(400).send({ message: "Choose a valid move-in date" });
     }
 
     const property = await propertiesCollection.findOne({
@@ -1035,19 +1077,11 @@ app.post("/payments", verifyToken, async (req, res) => {
     const cleanNotes =
       typeof notes === "string" ? notes.trim().slice(0, 500) : "";
 
-    const moveIn = new Date(moveInDate);
-    const startOfToday = new Date();
-    startOfToday.setHours(0, 0, 0, 0);
-
     if (!/^[0-9+\-\s()]{6,20}$/.test(cleanPhone)) {
       return res.status(400).send({ message: "Enter a valid phone number" });
     }
 
-    if (
-      typeof moveInDate !== "string" ||
-      isNaN(moveIn) ||
-      moveIn < startOfToday
-    ) {
+    if (!isValidMoveInDate(moveInDate)) {
       return res.status(400).send({ message: "Choose a valid move-in date" });
     }
 
